@@ -8,13 +8,14 @@ from typing import Any, Dict, List, Optional
 from google import genai
 from google.genai import types
 
+from app.core.config import settings
 from app.core.gemini_retry import GEMINI_RETRY
 from app.core.pipeline_context import add_pipeline_warning
 
 logger = logging.getLogger(__name__)
 
 
-_MODEL = "gemini-2.5-flash"
+_MODEL = settings.gemini_model
 _TEMPERATURE = 0.4
 
 

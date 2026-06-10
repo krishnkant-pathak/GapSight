@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     )
 
     google_api_key: str = Field(default="")
-    gemini_model: str = Field(default="gemini-2.5-flash")
+    gemini_model: str = Field(default="gemini-1.5-flash")
     gemini_embedding_model: str = Field(default="gemini-embedding-001")
 
     vector_db_provider: str = Field(default="chroma")
