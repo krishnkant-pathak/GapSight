@@ -1,0 +1,5 @@
+# GapSight Streamlit dashboard
+# Uses minimum-version pins so pip can pick wheels matching your Python.
+
+streamlit>=1.40
+requests>=2.32

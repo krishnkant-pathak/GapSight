@@ -1,0 +1,13 @@
+# Streamlit theme overrides for a modern, "deep-tech" aesthetic.
+# Edit primaryColor to recolor accents (buttons, links, sliders, progress bars).
+
+[theme]
+base = "light"
+primaryColor = "#3b82f6"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f8fafc"
+textColor = "#0f172a"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false
