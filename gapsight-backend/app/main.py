@@ -6,7 +6,7 @@ load_dotenv(override=True)
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict, List
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
