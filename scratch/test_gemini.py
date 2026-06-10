@@ -5,7 +5,7 @@ from google import genai
 from google.genai.errors import APIError
 
 async def main():
-    load_dotenv()
+    load_dotenv(override=True)
     api_key = os.getenv("GOOGLE_API_KEY")
     print(f"Loaded Key: {api_key[:10]}...{api_key[-10:] if api_key else ''}")
     

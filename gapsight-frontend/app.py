@@ -220,13 +220,21 @@ def _check_backend_health() -> Optional[Dict[str, Any]]:
     return None
 
 
-def _call_analyze(file_bytes: bytes, filename: str) -> Dict[str, Any]:
+def _call_analyze(
+    file_bytes: bytes,
+    filename: str,
+    user_api_key: Optional[str] = None,
+) -> Dict[str, Any]:
     files = {"file": (filename, file_bytes, "application/pdf")}
+    headers = {}
+    if user_api_key:
+        headers["X-Gemini-API-Key"] = user_api_key
 
     try:
         response = requests.post(
             ANALYZE_ENDPOINT,
             files=files,
+            headers=headers,
             timeout=REQUEST_TIMEOUT_S,
         )
     except requests.exceptions.ConnectionError as exc:
@@ -297,6 +305,13 @@ with st.sidebar:
         type=["pdf"],
         accept_multiple_files=False,
         label_visibility="collapsed",
+    )
+
+    user_api_key = st.text_input(
+        "Gemini API Key (Optional)",
+        type="password",
+        placeholder="AIzaSy...",
+        help="Paste your own Gemini API key if the default key is rate-limited or exhausted.",
     )
 
     analyze_clicked = st.button(
@@ -376,7 +391,7 @@ if analyze_clicked and uploaded_file is not None:
 
     def _run_api() -> None:
         try:
-            data = _call_analyze(file_bytes, filename)
+            data = _call_analyze(file_bytes, filename, user_api_key=user_api_key)
             result_container["status"] = "success"
             result_container["data"] = data
         except Exception as exc:

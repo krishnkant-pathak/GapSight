@@ -92,7 +92,15 @@ def _degraded_gaps(
     ]
 
 
+from app.core.pipeline_context import gemini_api_key_var
+
+
 def _resolved_api_key() -> Optional[str]:
+    # Check request-specific API key first
+    req_key = gemini_api_key_var.get()
+    if req_key and req_key.strip():
+        return req_key.strip()
+
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key or api_key.strip().lower() in {"", "replace-me", "your-key-here"}:
         return None

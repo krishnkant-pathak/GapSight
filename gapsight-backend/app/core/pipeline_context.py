@@ -25,3 +25,9 @@ def add_pipeline_warning(message: str) -> None:
 
 def get_pipeline_warnings() -> List[str]:
     return list(_pipeline_warnings.get([]))
+
+
+gemini_api_key_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "gemini_api_key",
+    default=None,
+)

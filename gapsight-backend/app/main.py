@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, List
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, status
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from google.genai.errors import APIError as GeminiAPIError
 from pydantic import BaseModel, Field
@@ -19,7 +19,11 @@ from app.agents.commercial_strategist import analyze_commercialization
 from app.agents.gap_identifier import identify_gaps
 from app.agents.prior_art_search import execute_prior_art_search
 from app.core.config import settings
-from app.core.pipeline_context import get_pipeline_warnings, reset_pipeline_warnings
+from app.core.pipeline_context import (
+    gemini_api_key_var,
+    get_pipeline_warnings,
+    reset_pipeline_warnings,
+)
 from app.core.seed_data import SEED_PATENTS
 from app.core.vector_db import seed_vector_db
 from app.services.pdf_parser import PDFParseError, extract_text_from_pdf
@@ -178,7 +182,11 @@ def health() -> Dict[str, str]:
     response_model=AnalysisResponse,
     tags=["analysis"],
 )
-async def analyze_paper(file: UploadFile = File(...)) -> AnalysisResponse:
+async def analyze_paper(
+    file: UploadFile = File(...),
+    x_gemini_api_key: Optional[str] = Header(None, alias="X-Gemini-API-Key"),
+) -> AnalysisResponse:
+    gemini_api_key_var.set(x_gemini_api_key)
     if file.content_type not in ALLOWED_PDF_CONTENT_TYPES and not (
         file.filename or ""
     ).lower().endswith(".pdf"):
