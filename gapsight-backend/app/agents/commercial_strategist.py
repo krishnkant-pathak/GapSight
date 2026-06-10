@@ -7,13 +7,9 @@ from typing import Any, Dict, List, Optional
 
 from google import genai
 from google.genai import types
-from google.genai.errors import ServerError
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
+
+from app.core.gemini_retry import GEMINI_RETRY
+from app.core.pipeline_context import add_pipeline_warning
 
 logger = logging.getLogger(__name__)
 
@@ -76,45 +72,16 @@ OUTPUT SCHEMA — return a JSON object with these EXACT fields:
 """.strip()
 
 
-_CRITICAL_FALLBACK_COMMERCIALIZATION: Dict[str, Any] = {
-    "commercialization_score": 82,
-    "startup_potential": "High / Venture-scale",
-    "market_size": "$1.4B addressable by 2030 (verifiable compute + confidential AI inference at the edge)",
-    "roi_ratio": "1 : 12x (early-stage capital to Series B exit)",
-    "funding_vehicles": [
-        "NSF SBIR Phase I — up to $275K non-dilutive grant for deep-tech R&D in hardware-rooted security.",
-        "DARPA Microelectronics Commons — strategic program with direct fit for trusted-execution research.",
-        "Andreessen Horowitz Crypto (a16z) — verifiable-computation thesis and privacy-preserving AI fit.",
-        "In-Q-Tel — intelligence-community strategic investor; high alignment with TEE / attestation tech.",
-        "Intel Capital — corporate strategic round with downstream silicon-partnership upside.",
-    ],
-    "competitor_map": [
-        {
-            "corporate_holder": "ARM Holdings",
-            "intersecting_tech": "TrustZone-M architecture and trusted execution primitives.",
-            "threat_level": "High",
-            "whitespace_advantage": "ARM patents focus on hardware-level world separation; this claim's intermediate-privilege runtime layer is structurally distinct and not covered by their existing portfolio.",
-        },
-        {
-            "corporate_holder": "NVIDIA",
-            "intersecting_tech": "Confidential Computing for GPU-accelerated AI inference.",
-            "threat_level": "Medium",
-            "whitespace_advantage": "NVIDIA's offering is GPU-centric and cloud-oriented; this claim targets embedded/edge TrustZone-M deployment, a different surface area.",
-        },
-        {
-            "corporate_holder": "Intel Corporation",
-            "intersecting_tech": "SGX and TDX trusted execution environments.",
-            "threat_level": "Medium",
-            "whitespace_advantage": "Intel's TEEs are x86-server-oriented; this claim addresses the Cortex-M embedded segment that their existing patents do not cover.",
-        },
-        {
-            "corporate_holder": "Microsoft",
-            "intersecting_tech": "Azure Confidential Computing and attested workloads.",
-            "threat_level": "Low",
-            "whitespace_advantage": "Microsoft's stack is cloud-managed and requires server-side attestation; this claim enables fully on-device verifiability without cloud round-trips.",
-        },
-    ],
-}
+def _degraded_commercialization(reason: str) -> Dict[str, Any]:
+    add_pipeline_warning(f"Agent 5 (Commercial Strategist): {reason}")
+    return {
+        "commercialization_score": 0,
+        "startup_potential": "Unavailable — API error",
+        "market_size": f"Analysis unavailable: {reason}",
+        "roi_ratio": "—",
+        "funding_vehicles": [],
+        "competitor_map": [],
+    }
 
 
 def _resolved_api_key() -> Optional[str]:
@@ -177,12 +144,7 @@ def _normalize_commercialization(payload: Any) -> Optional[Dict[str, Any]]:
     }
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=6),
-    retry=retry_if_exception_type(ServerError),
-    reraise=True,
-)
+@GEMINI_RETRY
 async def _call_gemini_for_commercial(
     client: "genai.Client",
     user_prompt: str,
@@ -206,14 +168,14 @@ async def analyze_commercialization(
 ) -> Dict[str, Any]:
     try:
         if not extracted_claims:
-            return _CRITICAL_FALLBACK_COMMERCIALIZATION
+            return _degraded_commercialization("No extracted claims were available.")
 
         api_key = _resolved_api_key()
         if api_key is None:
             logger.warning(
                 "GOOGLE_API_KEY not configured; returning fallback commercialization."
             )
-            return _CRITICAL_FALLBACK_COMMERCIALIZATION
+            return _degraded_commercialization("GOOGLE_API_KEY is not set.")
 
         high_gap_claim_ids = {
             str(g.get("claim_id", "")).strip()
@@ -244,13 +206,13 @@ async def analyze_commercialization(
         raw = await _call_gemini_for_commercial(client, user_prompt)
         if not raw:
             logger.error("Agent 5 returned empty content; using critical fallback.")
-            return _CRITICAL_FALLBACK_COMMERCIALIZATION
+            return _degraded_commercialization("Gemini returned an empty response.")
 
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
             logger.error("Agent 5 returned non-JSON content: %s", raw[:300])
-            return _CRITICAL_FALLBACK_COMMERCIALIZATION
+            return _degraded_commercialization("Gemini returned invalid JSON.")
 
         normalized = _normalize_commercialization(parsed)
         if normalized is None or not normalized.get("competitor_map"):
@@ -258,11 +220,14 @@ async def analyze_commercialization(
                 "Agent 5 normalization produced empty competitor_map; "
                 "using critical fallback."
             )
-            return _CRITICAL_FALLBACK_COMMERCIALIZATION
+            return _degraded_commercialization(
+                "No usable commercialization analysis was produced."
+            )
 
         return normalized
 
     except Exception as e:
+        reason = f"{e.__class__.__name__}: {e}"
         print(f"Agent 5 Critical Fallback triggered due to error: {e}")
         logger.exception("Agent 5 critical fallback triggered: %s", e)
-        return _CRITICAL_FALLBACK_COMMERCIALIZATION
+        return _degraded_commercialization(reason)

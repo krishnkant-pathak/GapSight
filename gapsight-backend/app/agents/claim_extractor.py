@@ -7,13 +7,9 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from google import genai
 from google.genai import types
-from google.genai.errors import ServerError
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
+
+from app.core.gemini_retry import GEMINI_RETRY
+from app.core.pipeline_context import add_pipeline_warning
 
 logger = logging.getLogger(__name__)
 
@@ -55,42 +51,23 @@ class ExtractedClaim(TypedDict):
     keywords: List[str]
 
 
-_CRITICAL_FALLBACK: Dict[str, Any] = {
-    "extracted_claims": [
-        {
-            "claim_id": "C1",
-            "category": "Security Architecture",
-            "technical_description": (
-                "A verifiable execution abstraction layer operating on "
-                "TrustZone-M architecture establishing a specialized "
-                "intermediate privilege runtime environment between Secure "
-                "and Non-Secure Worlds."
-            ),
-            "keywords": [
-                "TrustZone-M",
-                "TEE",
-                "Privilege Isolation",
-                "Runtime Environment",
-            ],
-        },
-        {
-            "claim_id": "C2",
-            "category": "Algorithm",
-            "technical_description": (
-                "An application-agnostic verification engine configured to "
-                "validate deep neural network inference parameters and "
-                "execution pathways within an untrusted environment without "
-                "disclosing model weights."
-            ),
-            "keywords": [
-                "DNN Inference",
-                "Verifiable Computation",
-                "Model Confidentiality",
-                "Weights Protection",
-            ],
-        },
-    ]
-}
+def _degraded_claims(reason: str) -> Dict[str, Any]:
+    add_pipeline_warning(f"Agent 1 (Claim Extractor): {reason}")
+    return {
+        "extracted_claims": [
+            {
+                "claim_id": "C0",
+                "category": "Pipeline Notice",
+                "technical_description": (
+                    f"Live claim extraction could not run: {reason}. "
+                    "Your PDF was parsed successfully, but Gemini did not "
+                    "return paper-specific claims. Check your API key, billing, "
+                    "and daily quota at https://ai.dev/rate-limit, then retry."
+                ),
+                "keywords": ["pipeline-degraded", "retry-required"],
+            }
+        ]
+    }
 
 
 def _resolved_api_key() -> Optional[str]:
@@ -101,19 +78,8 @@ def _resolved_api_key() -> Optional[str]:
 
 
 def _stub_payload(reason: str) -> Dict[str, Any]:
-    return {
-        "extracted_claims": [
-            {
-                "claim_id": "C0",
-                "category": "Stub",
-                "technical_description": (
-                    f"[STUB] {reason} Configure GOOGLE_API_KEY in .env to "
-                    "enable live claim extraction via Gemini."
-                ),
-                "keywords": ["stub", "configure_google_api_key"],
-            }
-        ]
-    }
+    add_pipeline_warning(f"Agent 1 (Claim Extractor): {reason}")
+    return _degraded_claims(reason)
 
 
 def _normalize_claims(payload: Any) -> Dict[str, Any]:
@@ -149,12 +115,7 @@ def _normalize_claims(payload: Any) -> Dict[str, Any]:
     return {"extracted_claims": cleaned}
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=6),
-    retry=retry_if_exception_type(ServerError),
-    reraise=True,
-)
+@GEMINI_RETRY
 async def _call_gemini_for_claims(
     client: "genai.Client",
     user_prompt: str,
@@ -188,13 +149,13 @@ async def extract_claims(pdf_text: str) -> Dict[str, Any]:
         raw = await _call_gemini_for_claims(client, user_prompt)
         if not raw:
             logger.error("Gemini returned empty content for claim extraction.")
-            return _CRITICAL_FALLBACK
+            return _degraded_claims("Gemini returned an empty response.")
 
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
             logger.error("Claim extractor returned non-JSON content: %s", raw[:300])
-            return _CRITICAL_FALLBACK
+            return _degraded_claims("Gemini returned invalid JSON for claim extraction.")
 
         normalized = _normalize_claims(parsed)
         if not normalized.get("extracted_claims"):
@@ -202,10 +163,11 @@ async def extract_claims(pdf_text: str) -> Dict[str, Any]:
                 "Claim extractor returned zero usable claims after "
                 "normalization; falling back."
             )
-            return _CRITICAL_FALLBACK
+            return _degraded_claims("No usable claims were extracted from the paper.")
         return normalized
 
     except Exception as e:
+        reason = f"{e.__class__.__name__}: {e}"
         print(f"Agent 1 Critical Fallback triggered due to error: {e}")
         logger.exception("Agent 1 critical fallback triggered: %s", e)
-        return _CRITICAL_FALLBACK
+        return _degraded_claims(reason)

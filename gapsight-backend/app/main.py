@@ -19,6 +19,7 @@ from app.agents.commercial_strategist import analyze_commercialization
 from app.agents.gap_identifier import identify_gaps
 from app.agents.prior_art_search import execute_prior_art_search
 from app.core.config import settings
+from app.core.pipeline_context import get_pipeline_warnings, reset_pipeline_warnings
 from app.core.seed_data import SEED_PATENTS
 from app.core.vector_db import seed_vector_db
 from app.services.pdf_parser import PDFParseError, extract_text_from_pdf
@@ -69,6 +70,8 @@ class AnalysisResponse(BaseModel):
     patent_gaps: List[PatentGap]
     drafted_claims: str
     commercialization: CommercializationAnalysis
+    pipeline_warnings: List[str] = Field(default_factory=list)
+    analysis_mode: str = "live"
 
 
 def _select_claims_for_drafting(
@@ -200,6 +203,8 @@ async def analyze_paper(file: UploadFile = File(...)) -> AnalysisResponse:
             detail=str(exc),
         ) from exc
 
+    reset_pipeline_warnings()
+
     try:
         extracted_claims = await extract_claims(paper_text)
     except GeminiAPIError as exc:
@@ -260,11 +265,14 @@ async def analyze_paper(file: UploadFile = File(...)) -> AnalysisResponse:
         commercialization = {
             "commercialization_score": 0,
             "startup_potential": "Analysis unavailable",
-            "market_size": "Unable to estimate",
+            "market_size": f"Unable to estimate: {exc}",
             "roi_ratio": "—",
             "funding_vehicles": [],
             "competitor_map": [],
         }
+
+    pipeline_warnings = get_pipeline_warnings()
+    analysis_mode = "degraded" if pipeline_warnings else "live"
 
     return AnalysisResponse(
         status="ok",
@@ -274,4 +282,6 @@ async def analyze_paper(file: UploadFile = File(...)) -> AnalysisResponse:
         patent_gaps=gap_analysis_results,
         drafted_claims=drafted_claims,
         commercialization=commercialization,
+        pipeline_warnings=pipeline_warnings,
+        analysis_mode=analysis_mode,
     )

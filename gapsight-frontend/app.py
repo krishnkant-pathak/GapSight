@@ -516,6 +516,23 @@ with col_m4:
 if elapsed is not None:
     st.caption(f"Last run: {elapsed:.1f}s end-to-end.")
 
+pipeline_warnings: List[str] = result.get("pipeline_warnings", []) or []
+analysis_mode: str = str(result.get("analysis_mode", "live") or "live")
+
+if pipeline_warnings or analysis_mode == "degraded":
+    st.error(
+        "**Degraded analysis — results are NOT paper-specific.** "
+        "One or more Gemini API calls failed (often daily free-tier quota). "
+        "The PDF was parsed, but agents could not produce live output for this paper."
+    )
+    for warning in pipeline_warnings:
+        st.warning(warning)
+    st.info(
+        "Check your Gemini API quota at https://ai.dev/rate-limit, enable billing "
+        "if needed, wait for the daily limit to reset, then click "
+        "**Run Comprehensive Analysis** again."
+    )
+
 st.divider()
 
 

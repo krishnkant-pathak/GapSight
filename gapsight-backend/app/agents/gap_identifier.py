@@ -7,13 +7,9 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from google import genai
 from google.genai import types
-from google.genai.errors import ServerError
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
+
+from app.core.gemini_retry import GEMINI_RETRY
+from app.core.pipeline_context import add_pipeline_warning
 
 logger = logging.getLogger(__name__)
 
@@ -63,57 +59,33 @@ class PatentGap(TypedDict):
     closest_prior_art: List[str]
 
 
-_FALLBACK_TEMPLATES: List[Dict[str, Any]] = [
-    {
-        "gap_score": 0.85,
-        "rationale": (
-            "While the retrieved prior art covers adjacent execution-"
-            "abstraction techniques, no patent in the corpus discloses the "
-            "specific combination of architectural elements described here. "
-            "This represents strong patentability white space."
-        ),
-    },
-    {
-        "gap_score": 0.78,
-        "rationale": (
-            "Existing patents address related verification problems but lack "
-            "the application-agnostic methodology and confidentiality "
-            "guarantees proposed in this claim. Significant unpatented gap."
-        ),
-    },
-    {
-        "gap_score": 0.71,
-        "rationale": (
-            "Some overlap with prior art exists in adjacent problem domains, "
-            "but this claim introduces structural elements not previously "
-            "disclosed in combination. Moderate-to-high gap."
-        ),
-    },
-    {
-        "gap_score": 0.62,
-        "rationale": (
-            "Closest prior art partially anticipates the broad concept, but "
-            "the specific implementation details remain undisclosed. "
-            "Moderate gap with room for narrower claim drafting."
-        ),
-    },
-]
-
-_FALLBACK_PRIOR_ART: List[str] = ["US10984207B2", "US11604812B2", "US11227210B1"]
-
-
-def _critical_fallback_gaps(
+def _degraded_gaps(
     extracted_claims: List[Dict[str, Any]],
+    reason: str,
+    prior_art_hits: Optional[List[Dict[str, Any]]] = None,
 ) -> List[PatentGap]:
+    add_pipeline_warning(f"Agent 3 (Gap Identifier): {reason}")
     if not extracted_claims:
         return []
+
+    closest: List[str] = []
+    for hit in prior_art_hits or []:
+        patent_id = str(hit.get("patent_id") or hit.get("id") or "").strip()
+        if patent_id and patent_id not in closest:
+            closest.append(patent_id)
+        if len(closest) >= 3:
+            break
 
     return [
         {
             "claim_id": str(claim.get("claim_id") or f"C{idx + 1}"),
-            "gap_score": float(_FALLBACK_TEMPLATES[idx % len(_FALLBACK_TEMPLATES)]["gap_score"]),
-            "rationale": str(_FALLBACK_TEMPLATES[idx % len(_FALLBACK_TEMPLATES)]["rationale"]),
-            "closest_prior_art": list(_FALLBACK_PRIOR_ART),
+            "gap_score": 0.0,
+            "rationale": (
+                f"Automated gap scoring unavailable ({reason}). "
+                "This is a placeholder — not an assessment of this paper's "
+                "patentability. Retry after resolving the Gemini API issue."
+            ),
+            "closest_prior_art": closest or ["N/A — prior art search may still have run"],
         }
         for idx, claim in enumerate(extracted_claims)
     ]
@@ -169,12 +141,7 @@ def _normalize_gaps(payload: Any) -> List[PatentGap]:
     return cleaned
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=6),
-    retry=retry_if_exception_type(ServerError),
-    reraise=True,
-)
+@GEMINI_RETRY
 async def _call_gemini_for_gaps(
     client: "genai.Client",
     user_prompt: str,
@@ -202,7 +169,11 @@ async def identify_gaps(
         api_key = _resolved_api_key()
         if api_key is None:
             logger.warning("GOOGLE_API_KEY not configured; returning fallback gaps.")
-            return _critical_fallback_gaps(extracted_claims)
+            return _degraded_gaps(
+                extracted_claims,
+                "GOOGLE_API_KEY is not set.",
+                prior_art_hits,
+            )
 
         claims_json = json.dumps(extracted_claims, indent=2, ensure_ascii=False)
         prior_art_json = json.dumps(prior_art_hits, indent=2, ensure_ascii=False)
@@ -215,13 +186,21 @@ async def identify_gaps(
         raw = await _call_gemini_for_gaps(client, user_prompt)
         if not raw:
             logger.error("Agent 3 returned empty content; using critical fallback.")
-            return _critical_fallback_gaps(extracted_claims)
+            return _degraded_gaps(
+                extracted_claims,
+                "Gemini returned an empty response.",
+                prior_art_hits,
+            )
 
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
             logger.error("Agent 3 returned non-JSON content: %s", raw[:300])
-            return _critical_fallback_gaps(extracted_claims)
+            return _degraded_gaps(
+                extracted_claims,
+                "Gemini returned invalid JSON.",
+                prior_art_hits,
+            )
 
         gaps = _normalize_gaps(parsed)
         if not gaps:
@@ -229,11 +208,16 @@ async def identify_gaps(
                 "Agent 3 parsed JSON but produced no usable gaps; "
                 "using critical fallback."
             )
-            return _critical_fallback_gaps(extracted_claims)
+            return _degraded_gaps(
+                extracted_claims,
+                "No usable gap scores were produced.",
+                prior_art_hits,
+            )
 
         return gaps
 
     except Exception as e:
+        reason = f"{e.__class__.__name__}: {e}"
         print(f"Agent 3 Critical Fallback triggered due to error: {e}")
         logger.exception("Agent 3 critical fallback triggered: %s", e)
-        return _critical_fallback_gaps(extracted_claims)
+        return _degraded_gaps(extracted_claims, reason, prior_art_hits)
