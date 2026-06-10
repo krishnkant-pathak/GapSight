@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Any, Dict, List, TypedDict
 
-from app.core.vector_db import search_prior_art as vector_search
+from app.core.vector_db import search_prior_art_batch as vector_search_batch
 
 logger = logging.getLogger(__name__)
 
@@ -48,16 +48,6 @@ def _build_query(claim: Dict[str, Any]) -> str:
     return description or keywords
 
 
-async def _safe_search(query: str) -> List[Dict[str, Any]]:
-    if not query:
-        return []
-    try:
-        return await vector_search(query, top_k=_TOP_K_PER_CLAIM)
-    except Exception as exc:
-        logger.warning("Per-claim prior-art search failed: %s", exc)
-        return []
-
-
 async def execute_prior_art_search(
     extracted_claims: List[Dict[str, Any]],
 ) -> List[PriorArtHit]:
@@ -65,7 +55,11 @@ async def execute_prior_art_search(
         return []
 
     queries = [_build_query(claim) for claim in extracted_claims]
-    per_claim_hits = await asyncio.gather(*(_safe_search(q) for q in queries))
+    try:
+        per_claim_hits = await vector_search_batch(queries, top_k=_TOP_K_PER_CLAIM)
+    except Exception as exc:
+        logger.error("Batch prior-art search failed: %s", exc)
+        per_claim_hits = [[] for _ in queries]
 
     by_patent: Dict[str, PriorArtHit] = {}
     for claim, hits in zip(extracted_claims, per_claim_hits):

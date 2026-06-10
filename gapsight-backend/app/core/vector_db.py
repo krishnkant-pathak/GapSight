@@ -10,6 +10,7 @@ from google import genai
 from google.genai.errors import APIError
 
 from app.core.config import settings
+from app.core.gemini_retry import GEMINI_RETRY
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ def _resolved_api_key() -> Optional[str]:
     return api_key.strip()
 
 
+@GEMINI_RETRY
 async def _embed_texts(texts: List[str]) -> Optional[List[List[float]]]:
     if not texts:
         return []
@@ -164,3 +166,71 @@ async def search_prior_art(query_text: str, top_k: int = 3) -> List[Dict[str, An
             }
         )
     return hits
+
+
+async def search_prior_art_batch(query_texts: List[str], top_k: int = 3) -> List[List[Dict[str, Any]]]:
+    if not query_texts:
+        return []
+
+    # Clean and filter empty query texts
+    cleaned_queries = [q.strip() for q in query_texts if q.strip()]
+    if not cleaned_queries:
+        return [[] for _ in query_texts]
+
+    embeddings = await _embed_texts(cleaned_queries)
+    if not embeddings:
+        return [[] for _ in query_texts]
+
+    try:
+        collection = await asyncio.to_thread(_get_collection)
+        result = await asyncio.to_thread(
+            collection.query,
+            query_embeddings=embeddings,
+            n_results=top_k,
+        )
+    except Exception as exc:
+        logger.exception("Vector DB batch query failed: %s", exc)
+        return [[] for _ in query_texts]
+
+    all_hits: List[List[Dict[str, Any]]] = []
+    
+    # Chroma returns lists of lists for batch queries
+    batch_ids = result.get("ids") or []
+    batch_docs = result.get("documents") or []
+    batch_dists = result.get("distances") or []
+    batch_metas = result.get("metadatas") or []
+
+    for q_idx in range(len(cleaned_queries)):
+        ids = batch_ids[q_idx] if q_idx < len(batch_ids) else []
+        docs = batch_docs[q_idx] if q_idx < len(batch_docs) else []
+        dists = batch_dists[q_idx] if q_idx < len(batch_dists) else []
+        metas = batch_metas[q_idx] if q_idx < len(batch_metas) else []
+
+        hits: List[Dict[str, Any]] = []
+        for idx, doc_id in enumerate(ids):
+            distance = float(dists[idx]) if idx < len(dists) else 1.0
+            meta = metas[idx] if idx < len(metas) else {}
+            document = docs[idx] if idx < len(docs) else ""
+            hits.append(
+                {
+                    "patent_id": str(meta.get("patent_id") or doc_id),
+                    "title": str(meta.get("title", "")),
+                    "abstract": str(document),
+                    "similarity_score": round(max(0.0, 1.0 - distance), 4),
+                }
+            )
+        all_hits.append(hits)
+        
+    # Reconstruct the output to match the original query_texts order
+    # (accounting for any query that might have been filtered out if empty)
+    final_output: List[List[Dict[str, Any]]] = []
+    clean_idx = 0
+    for q in query_texts:
+        if q.strip():
+            final_output.append(all_hits[clean_idx])
+            clean_idx += 1
+        else:
+            final_output.append([])
+            
+    return final_output
+
